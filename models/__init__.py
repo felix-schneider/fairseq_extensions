@@ -1,1 +1,1 @@
-from . import my_transformer
+from . import my_transformer, fast_transformer
