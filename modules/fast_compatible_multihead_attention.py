@@ -44,7 +44,7 @@ class FastCompatibleMultiheadAttention(nn.Module):
             self.in_proj_weight = nn.Parameter(torch.empty(3 * self.embed_dim, self.embed_dim))
         else:
             self.in_proj_weight_q = nn.Parameter(torch.empty(self.embed_dim, self.embed_dim))
-            self.in_proj_weight_kv = nn.Parameter(torch.empty(2 * self.embed_dim, self.key_dim))
+            self.in_proj_weight_kv = nn.Parameter(torch.empty(2 * self.embed_dim, self.kdim))
 
         self.out_proj_weight = nn.Parameter(torch.empty(self.embed_dim, self.embed_dim))
 
@@ -184,7 +184,7 @@ class FastCompatibleMultiheadAttention(nn.Module):
 
             if key is not None:
                 src_len, bsz, kv_dim = key.size()
-                assert kv_dim == self.key_dim
+                assert kv_dim == self.kdim
                 if self.in_proj_bias_kv is not None:
                     input_lin_kv_results = torch.addmm(self.in_proj_bias_kv,
                                                        key.view(src_len * bsz, kv_dim),

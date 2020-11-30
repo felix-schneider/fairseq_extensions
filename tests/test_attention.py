@@ -23,6 +23,7 @@ def length_to_mask(length, max_len=None, dtype=None):
 
 
 seq_len = 10
+q_len = 7
 bsz = 5
 embed_dim = 512
 num_heads = 8
@@ -42,3 +43,19 @@ outputs_cuda, _ = attn(inputs, inputs, inputs, key_padding_mask=padding_mask)
 outputs_python, _ = attn(inputs, inputs, inputs, key_padding_mask=padding_mask, need_weights=True)
 
 compare(outputs_cuda, outputs_python, atol=1e-3)
+print("Cuda and python match")
+
+
+print("Test encdec attention")
+attn = FastCompatibleMultiheadAttention(
+    embed_dim, num_heads, dropout=0.0, bias=False, encoder_decoder_attention=True
+)
+attn.half().cuda()
+
+q_inputs = torch.rand((q_len, bsz, embed_dim)).half().cuda()
+
+outputs_cuda, _ = attn(q_inputs, inputs, inputs, key_padding_mask=padding_mask)
+outputs_python, _ = attn(q_inputs, inputs, inputs, key_padding_mask=padding_mask, need_weights=True)
+
+compare(outputs_cuda, outputs_python, atol=1e-3)
+print("Cuda and python match")
