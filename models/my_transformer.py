@@ -9,6 +9,7 @@ from torch import Tensor
 
 from fairseq import utils
 from fairseq.models import register_model, register_model_architecture
+from fairseq.models.fairseq_encoder import EncoderOut
 from fairseq.models.transformer import TransformerEncoder, TransformerDecoder, TransformerModel, base_architecture
 from ..modules.my_transformer_layer import MyTransformerDecoderLayer, MyTransformerEncoderLayer
 
@@ -44,7 +45,7 @@ class MyTransformerEncoder(TransformerEncoder):
         x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
 
         # B x T x C -> T x B x C
-        x = x.transpose(0, 1)
+        x = x.transpose(0, 1).contiguous()
 
         # compute padding mask
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
@@ -64,15 +65,15 @@ class MyTransformerEncoder(TransformerEncoder):
         if self.layer_norm is not None:
             x = self.layer_norm(x)
 
-        # Diff: Why would you include the keys for src_tokens and src_lengths in the encoder and not use them?!
-        return {
-            "encoder_out": [x],  # T x B x C
-            "encoder_padding_mask": [encoder_padding_mask],  # B x T
-            "encoder_embedding": [encoder_embedding],  # B x T x C
-            "encoder_states": encoder_states,  # List[T x B x C]
-            "src_tokens": [src_tokens],
-            "src_lengths": [src_lengths],
-        }
+        # Diff: Why would you include the fields for src_tokens and src_lengths in the encoder and not use them?!
+        return EncoderOut(
+            encoder_out=x,  # T x B x C
+            encoder_padding_mask=encoder_padding_mask,  # B x T
+            encoder_embedding=encoder_embedding,  # B x T x C
+            encoder_states=encoder_states,  # List[T x B x C]
+            src_tokens=src_tokens,
+            src_lengths=src_lengths,
+        )
 
 
 class MyTransformerDecoder(TransformerDecoder):
@@ -97,19 +98,94 @@ class MyTransformerDecoder(TransformerDecoder):
             x = self.output_layer(x)
         return x, extra
 
-    def extract_features(self, prev_output_tokens, encoder_out: Optional[Dict[str, List[Tensor]]],
+    def extract_features(self,
+                         prev_output_tokens,
+                         encoder_out: Optional[EncoderOut],
                          incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-                         full_context_alignment: bool = False, alignment_layer: Optional[int] = None,
+                         full_context_alignment: bool = False,
+                         alignment_layer: Optional[int] = None,
                          alignment_heads: Optional[int] = None,
                          **unused):
-        return self.extract_features_scriptable(
-            prev_output_tokens,
-            encoder_out,
-            incremental_state,
-            full_context_alignment,
-            alignment_layer,
-            alignment_heads,
+        # diff: if alignment_layer is None, we want no alignment
+
+        # embed positions
+        positions = (
+            self.embed_positions(
+                prev_output_tokens, incremental_state=incremental_state
+            )
+            if self.embed_positions is not None
+            else None
         )
+
+        if incremental_state is not None:
+            prev_output_tokens = prev_output_tokens[:, -1:]
+            if positions is not None:
+                positions = positions[:, -1:]
+
+        # embed tokens and positions
+        x = self.embed_scale * self.embed_tokens(prev_output_tokens)
+
+        if self.quant_noise is not None:
+            x = self.quant_noise(x)
+
+        if self.project_in_dim is not None:
+            x = self.project_in_dim(x)
+
+        if positions is not None:
+            x += positions
+
+        if self.layernorm_embedding is not None:
+            x = self.layernorm_embedding(x)
+
+        x = self.dropout_module(x)
+
+        # B x T x C -> T x B x C
+        x = x.transpose(0, 1).contiguous()
+
+        self_attn_padding_mask: Optional[Tensor] = None
+        if self.cross_self_attention or prev_output_tokens.eq(self.padding_idx).any():
+            self_attn_padding_mask = prev_output_tokens.eq(self.padding_idx)
+
+        # decoder layers
+        attn: Optional[Tensor] = None
+        inner_states: List[Optional[Tensor]] = [x]
+        for idx, layer in enumerate(self.layers):
+            if incremental_state is None and not full_context_alignment:
+                self_attn_mask = self.buffered_future_mask(x)
+            else:
+                self_attn_mask = None
+
+            x, layer_attn, _ = layer(
+                x,
+                encoder_out.encoder_out if encoder_out is not None else None,
+                encoder_out.encoder_padding_mask if encoder_out is not None else None,
+                incremental_state,
+                self_attn_mask=self_attn_mask,
+                self_attn_padding_mask=self_attn_padding_mask,
+                need_attn=bool((idx == alignment_layer)),
+                need_head_weights=bool((idx == alignment_layer)),
+            )
+            inner_states.append(x)
+            if layer_attn is not None and idx == alignment_layer:
+                attn = layer_attn  # diff: remove type conversions
+
+        if attn is not None:
+            if alignment_heads is not None:
+                attn = attn[:alignment_heads]
+
+            # average probabilities over heads
+            attn = attn.mean(dim=0)
+
+        if self.layer_norm is not None:
+            x = self.layer_norm(x)
+
+        # T x B x C -> B x T x C
+        x = x.transpose(0, 1)
+
+        if self.project_out_dim is not None:
+            x = self.project_out_dim(x)
+
+        return x, {"attn": [attn], "inner_states": inner_states}
 
 
 @register_model_architecture("my_transformer", "my_transformer")

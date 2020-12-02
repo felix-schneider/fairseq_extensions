@@ -9,6 +9,10 @@ class FastTransformerModel(MyTransformerModel):
     def build_encoder(cls, args, src_dict, embed_tokens):
         return FastTransformerEncoder(args, src_dict, embed_tokens)
 
+    @classmethod
+    def build_decoder(cls, args, tgt_dict, embed_tokens):
+        return FastTransformerDecoder(args, tgt_dict, embed_tokens)
+
 
 class FastTransformerEncoder(MyTransformerEncoder):
     def build_encoder_layer(self, args):

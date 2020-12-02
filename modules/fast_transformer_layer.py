@@ -7,7 +7,7 @@ class FastTransformerEncoderLayer(MyTransformerEncoderLayer):
         if self.quant_noise > 0:
             raise NotImplementedError("Quantization is not supported")
         return FastCompatibleMultiheadAttention(
-            embed_dim, args.encoder_attention_heads, args.attention_dropout,
+            embed_dim, args.encoder_attention_heads, dropout=args.attention_dropout,
             bias=True, self_attention=True
         )
 

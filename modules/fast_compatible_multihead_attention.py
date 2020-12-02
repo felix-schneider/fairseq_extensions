@@ -1,10 +1,12 @@
 import math
+from typing import Dict, Optional
 
 import torch
 import torch.nn.functional as F
 from apex.contrib.multihead_attn.fast_encdec_multihead_attn_func import fast_encdec_attn_func
 from apex.contrib.multihead_attn.fast_self_multihead_attn_func import fast_self_attn_func
 from torch import nn
+from torch import Tensor
 
 from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules import MultiheadAttention
@@ -123,7 +125,7 @@ class FastCompatibleMultiheadAttention(nn.Module):
                 and not before_softmax
                 and not (attn_mask is not None and not self.bias)
         ):
-            print("Using CUDA implementation")
+            # print("Using CUDA implementation")
             if self.self_attention:
                 outputs = fast_self_attn_func(
                     attn_mask is not None, self.training, self.num_heads, query,
@@ -140,7 +142,7 @@ class FastCompatibleMultiheadAttention(nn.Module):
                 )
             return outputs, None
 
-        print("Using python implementation")
+        # print("Using python implementation")
         tgt_len, bsz, embed_dim = query.size()
 
         if incremental_state is not None:
@@ -291,3 +293,42 @@ class FastCompatibleMultiheadAttention(nn.Module):
                 attn_weights = attn_weights.mean(dim=0)
         return outputs, attn_weights
 
+    @torch.jit.export
+    def reorder_incremental_state(
+            self,
+            incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+            new_order: Tensor,
+    ):
+        """Reorder buffered internal state (for incremental generation)."""
+        input_buffer = self._get_input_buffer(incremental_state)
+        if input_buffer is not None:
+            for k in input_buffer.keys():
+                input_buffer_k = input_buffer[k]
+                if input_buffer_k is not None:
+                    if self.encoder_decoder_attention and input_buffer_k.size(
+                            0
+                    ) == new_order.size(0):
+                        break
+                    input_buffer[k] = input_buffer_k.index_select(0, new_order)
+            incremental_state = self._set_input_buffer(incremental_state, input_buffer)
+        return incremental_state
+
+    def _get_input_buffer(
+            self, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]
+    ) -> Dict[str, Optional[Tensor]]:
+        result = self.get_incremental_state(incremental_state, "attn_state")
+        if result is not None:
+            return result
+        else:
+            empty_result: Dict[str, Optional[Tensor]] = {}
+            return empty_result
+
+    def _set_input_buffer(
+            self,
+            incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+            buffer: Dict[str, Optional[Tensor]],
+    ):
+        return self.set_incremental_state(incremental_state, "attn_state", buffer)
+
+    def apply_sparse_mask(self, attn_weights, tgt_len: int, src_len: int, bsz: int):
+        return attn_weights
