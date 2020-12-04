@@ -124,6 +124,7 @@ class FastCompatibleMultiheadAttention(nn.Module):
                 and not need_weights
                 and not before_softmax
                 and not (attn_mask is not None and not self.bias)
+                and query.size(1) <= 1024
         ):
             # print("Using CUDA implementation")
             if self.self_attention:
@@ -204,6 +205,7 @@ class FastCompatibleMultiheadAttention(nn.Module):
                 values = None
 
         if saved_state is not None:
+            # keys/values are saved as [len, bsz,  num_heads, head_dim]
             if "prev_key" in saved_state:
                 _prev_key = saved_state["prev_key"]
                 assert _prev_key is not None
@@ -213,7 +215,6 @@ class FastCompatibleMultiheadAttention(nn.Module):
                 else:
                     assert keys is not None
                     keys = torch.cat([prev_key, keys], dim=0)
-
             if "prev_value" in saved_state:
                 _prev_value = saved_state["prev_value"]
                 assert _prev_value is not None
@@ -222,7 +223,7 @@ class FastCompatibleMultiheadAttention(nn.Module):
                     values = prev_value
                 else:
                     assert values is not None
-                    values = torch.cat([prev_value, values], dim=1)
+                    values = torch.cat([prev_value, values], dim=0)
 
             prev_key_padding_mask = None
             if "prev_key_padding_mask" in saved_state:
@@ -301,16 +302,24 @@ class FastCompatibleMultiheadAttention(nn.Module):
     ):
         """Reorder buffered internal state (for incremental generation)."""
         input_buffer = self._get_input_buffer(incremental_state)
-        if input_buffer is not None:
-            for k in input_buffer.keys():
-                input_buffer_k = input_buffer[k]
-                if input_buffer_k is not None:
-                    if self.encoder_decoder_attention and input_buffer_k.size(
-                            0
-                    ) == new_order.size(0):
-                        break
-                    input_buffer[k] = input_buffer_k.index_select(0, new_order)
-            incremental_state = self._set_input_buffer(incremental_state, input_buffer)
+        if "prev_key" in input_buffer:
+            prev_key = input_buffer["prev_key"]
+            if self.encoder_decoder_attention and \
+                    prev_key is not None and \
+                    prev_key.size(1) == new_order.size(0):
+                incremental_state = self._set_input_buffer(incremental_state, input_buffer)
+                return incremental_state
+            input_buffer["prev_key"] = prev_key.index_select(1, new_order) \
+                if prev_key is not None else prev_key
+        if "prev_value" in input_buffer:
+            prev_value = input_buffer["prev_value"]
+            input_buffer["prev_value"] = prev_value.index_select(1, new_order) \
+                if prev_value is not None else prev_value
+        if "prev_key_padding_mask":
+            prev_key_padding_mask = input_buffer["prev_key_padding_mask"]
+            input_buffer["prev_key_padding_mask"] = prev_key_padding_mask.index_select(0, new_order) \
+                if prev_key_padding_mask is not None else prev_key_padding_mask
+        incremental_state = self._set_input_buffer(incremental_state, input_buffer)
         return incremental_state
 
     def _get_input_buffer(

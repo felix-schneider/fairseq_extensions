@@ -91,9 +91,10 @@ class CopyTransformerDecoder(FastTransformerDecoder):
         logits = super().output_layer(features)
 
         bsz, tgt_len, n = logits.size()
+        src_len = src_tokens.size(1)
         assert n == self.num_embeddings
         assert src_tokens.size(0) == bsz
-        src_len = src_tokens.size(1)
+        assert list(attn.size()) == [bsz, tgt_len, src_len]
 
         probs = super().get_normalized_probs((logits, None), log_probs=False, sample=None)
         padding = probs.new_zeros((bsz, tgt_len, self.num_oov_types))
